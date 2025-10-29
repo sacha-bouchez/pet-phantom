@@ -12,7 +12,7 @@ class Phantom2DPetGenerator:
         self.shape = shape
         self.voxel_size = voxel_size
 
-    def set_seed(seed=None):
+    def set_seed(self, seed=None):
         if seed is not None:
             np.random.seed(seed=seed)
 
