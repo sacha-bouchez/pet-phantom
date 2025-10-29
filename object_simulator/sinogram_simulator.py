@@ -10,21 +10,20 @@ class SinogramSimulator:
         param random_deficiencies: Random deficiencies of crystal sensitivities, e.g. give 10 means 10% around 1 randomly shot.
         param save_castor: Whether to save castor file for reconstruction later on.
         """
-        self.binsimu
-        self.dout = dout
+        self.binsimu = binsimu
         self.seed = seed
         self.scanner_name = scanner_name
         self.random_deficiencies = random_deficiencies
-        self.save_castor
+        self.save_castor = save_castor
         self.verbose = verbose
 
     def create_crystal_map(self):
 
         self.cmap_out = os.path.join(self.dout, 'cmap')
-        cmd = f"{self.binsimu}/create_crystal_map.exe -m {self.scanner_name} -r {self.random_deficiencies} -o {cmap_out} -w -v {self.verbose}"
+        cmd = f"cd {self.dout} && {self.binsimu}/create_crystal_map.exe -m {self.scanner_name} -r {self.random_deficiencies} -o cmap -w -v {self.verbose}"
         os.system(cmd)
 
-    def simulate(self, img_path, img_att_path, dest_path,
+    def simulate(self, img_path, img_att_path,
                 scatter_component=0.35,
                 random_component=0.40,
                 gaussian_PSF=4.,
@@ -44,22 +43,21 @@ class SinogramSimulator:
             img_att_path += '.hdr'
 
         cmd = \
-            f"{self.dout}/simulator.exe -m {self.scanner_name} -c {os.path.join(self.dout, 'cmap', 'cmap.ecm')}" \
+            f"cd {self.dout} && {self.binsimu}/simulator.exe -m {self.scanner_name} -c {os.path.join(self.dout, 'cmap', 'cmap.ecm')}" \
             f" -i {img_path} -a {img_att_path} -s {scatter_component} -r {random_component} -p {gaussian_PSF}" \
-            f" -v {self.verbose} -P {nb_count} -o {dest_path}"
+            f" -v {self.verbose} -P {nb_count} -o simu"
         os.system(cmd)
 
-    def create_castor_data(self, simu_path, dest_out):
+    def create_castor_data(self):
 
-        simu_folder = os.path.dirname(simu_path)
 
         cmd = \
-            f"{self.binsimu}/create_castor_data.exe -m {self.scanner_name} -o {dest_out}" \
-            f" -p {os.path.join(simu_path, simu_folder + '_pt.s.hdr')}" \
-            f" -r {os.path.join(simu_path, simu_folder + '_rd.s.hdr')}" \
-            f" -s {os.path.join(simu_path, simu_folder + '_st.s.hdr')}" \
-            f" -n {os.path.join(simu_path, simu_folder + '_nm.s.hdr')}" \
-            f" -A {os.path.join(simu_path, simu_folder + '_at.s')}" \
-            f" -c {self.cmap_out}.ecm -castor -v {self.verbose}"
+            f"cd {self.dout} && {self.binsimu}/create_castor_data.exe -m {self.scanner_name} -o castor_data" \
+            f" -p simu/simu_pt.s.hdr" \
+            f" -r simu/simu_rd.s.hdr" \
+            f" -s simu/simu_sc.s.hdr" \
+            f" -n simu/simu_nm.s.hdr" \
+            f" -A simu/simu_at.s" \
+            f" -c cmap/cmap.ecm -castor -v {self.verbose}"
         os.system(cmd)
 

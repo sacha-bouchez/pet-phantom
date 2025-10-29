@@ -10,6 +10,10 @@ class Phantom2DPetGenerator:
         self.shape = shape
         self.voxel_size = voxel_size
 
+    def set_seed(seed=None):
+        if seed is not None:
+            np.random.seed(seed=seed)
+
     def create_ellipse(self, center, axes):
         """
         Create binary mask with filled ellipse
@@ -139,7 +143,7 @@ CASToR version := 3.1
 !GENERAL DATA :=
 !originating system := create_phantom
 !data offset in bytes := 0
-!name of data file := {dout}.img
+!name of data file := {os.path.basename(dout)}.img
 patient name := {os.path.basename(dout)}
 
 !GENERAL IMAGE DATA
@@ -174,9 +178,10 @@ quantification units := 1
         # Write image data file
         with open(dout + '.img', 'wb') as f:
             img.astype(np.float32).tofile(f)
-        
 
-    def run(self):
+        return dout
+
+    def run(self, dest_path):
         """
         Generation function for body creation, organ embedding, tumour embedding.
         """
@@ -228,15 +233,24 @@ quantification units := 1
         out, seed = self.postprocess(out, seed=None)
         attenuation_map, _ = self.postprocess(attenuation_map, seed=seed)
 
-        return out.astype(np.float32), attenuation_map.astype(np.float32)
+        # Save files
+        if not os.path.exists(dest_path):
+            os.makedirs(dest_path)
+        obj, att = out.astype(np.float32), attenuation_map.astype(np.float32)
+        dout_obj = self.save_file(obj, os.path.join(dest_path, os.path.basename(dest_path)))
+        dout_att = self.save_file(att, os.path.join(dest_path, os.path.basename(dest_path) + '_att'))
+
+        return dout_obj, dout_att
 
 if __name__ == '__main__':
 
     generator = Phantom2DPetGenerator()
-    obj, att = generator.run()
+    obj, att = generator.run(dest_path='./data')
 
-    generator.save_file(obj, 'test_image')
-    generator.save_file(att, 'test_image_att')
+    with open(obj + '.img', 'rb') as f:
+        obj = np.fromfile(f, dtype=np.float32).reshape((256,256))
+    with open(att + '.img', 'rb') as f:
+        att = np.fromfile(f, dtype=np.float32).reshape((256,256))
 
     fig, ax = plt.subplots(1, 2)
     ax1 = ax[0].imshow(obj, cmap='gray_r', vmin=0, vmax=50)
