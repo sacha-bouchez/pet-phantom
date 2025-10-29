@@ -61,3 +61,30 @@ class SinogramSimulator:
             f" -c cmap/cmap.ecm -castor -v {self.verbose}"
         os.system(cmd)
 
+    def run(self, img_path, img_att_path, dest_path):
+
+        #
+        if not os.path.join(dest_path):
+            os.makedirs(dest_path)
+        self.dout = dest_path
+
+        # Create crystal map
+        if not hasattr(self, 'cmap_out') or (hasattr(self, 'cmap_out') and not os.path.exists(self.cmap_out)):
+            self.create_crystal_map()
+
+        # Simulation
+        self.simulate(img_path, img_att_path)
+
+        # Save castor data
+        if self.save_castor:
+            self.create_castor_data()
+
+if __name__ == '__main__':
+
+    # Create object first
+    from object_simulator import Phantom2DPetGenerator
+    generator = Phantom2DPetGenerator(shape=(256,256), voxel_size=(2,2,2))
+    obj_path, att_path = generator.run('/workspace/development/data/data1/object')
+
+    ss = SinogramSimulator(binsimu='/workspace/development/simulator/bin')
+    ss.run(img_path=obj_path, img_att_path=att_path, dest_path='/workspace/development/data/data1')
