@@ -1,7 +1,9 @@
 import numpy as np
 import os
-import matplotlib.pyplot as plt
-from scipy.ndimage import gaussian_filter
+try:
+    import matplotlib.pyplot as plt
+except:
+    print('Failed to import matplotlib')
 import albumentations as A
 
 class Phantom2DPetGenerator:
@@ -105,8 +107,6 @@ class Phantom2DPetGenerator:
             A.GridDistortion(num_steps=15, distort_limit=0.5, p=1)
         ], seed=seed)
         img = transform(image=img)['image']
-
-        # img = gaussian_filter(img, sigma=1)
 
         return img, seed
 
