@@ -2,7 +2,7 @@ import os
 
 class SinogramSimulator:
 
-    def __init__(self, binsimu, dout='./', seed=42, scanner_name='mmr2d', random_deficiencies=10, save_castor=True, verbose=0):
+    def __init__(self, binsimu, dout='./', seed=None, scanner_name='mmr2d', random_deficiencies=10, save_castor=True, verbose=0):
         """
         param binsium: absolute path to the binaries used in this class.
         param dout: destinaion path to store generated sinograms.
@@ -11,11 +11,14 @@ class SinogramSimulator:
         param save_castor: Whether to save castor file for reconstruction later on.
         """
         self.binsimu = binsimu
-        self.seed = seed
+        self.set_seed(seed)
         self.scanner_name = scanner_name
         self.random_deficiencies = random_deficiencies
         self.save_castor = save_castor
         self.verbose = verbose
+
+    def set_seed(self, seed=None):
+        self.seed = seed
 
     def create_crystal_map(self):
 
@@ -45,7 +48,7 @@ class SinogramSimulator:
         cmd = \
             f"cd {self.dout} && {self.binsimu}/simulator.exe -m {self.scanner_name} -c {os.path.join(self.dout, 'cmap', 'cmap.ecm')}" \
             f" -i {img_path} -a {img_att_path} -s {scatter_component} -r {random_component} -p {gaussian_PSF}" \
-            f" -v {self.verbose} -P {nb_count} -o simu"
+            f" -v {self.verbose} -P {nb_count} -o simu -z {self.seed}"
         os.system(cmd)
 
     def create_castor_data(self):
