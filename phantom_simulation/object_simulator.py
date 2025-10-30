@@ -179,7 +179,7 @@ quantification units := 1
         with open(dout + '.img', 'wb') as f:
             img.astype(np.float32).tofile(f)
 
-        return dout
+        return os.path.join(os.path.abspath('.'), dout)
 
     def run(self, dest_path):
         """

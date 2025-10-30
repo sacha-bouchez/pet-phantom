@@ -46,7 +46,7 @@ class SinogramSimulator:
             img_att_path += '.hdr'
 
         cmd = \
-            f"cd {self.dout} && {self.binsimu}/simulator.exe -m {self.scanner_name} -c {os.path.join(self.dout, 'cmap', 'cmap.ecm')}" \
+            f"cd {self.dout} && {self.binsimu}/simulator.exe -m {self.scanner_name} -c 'cmap/cmap.ecm'" \
             f" -i {img_path} -a {img_att_path} -s {scatter_component} -r {random_component} -p {gaussian_PSF}" \
             f" -v {self.verbose} -P {nb_count} -o simu -z {self.seed}"
         os.system(cmd)
@@ -67,13 +67,12 @@ class SinogramSimulator:
     def run(self, img_path, img_att_path, dest_path):
 
         #
-        if not os.path.join(dest_path):
+        if not os.path.exists(dest_path):
             os.makedirs(dest_path)
         self.dout = dest_path
 
         # Create crystal map
-        if not hasattr(self, 'cmap_out') or (hasattr(self, 'cmap_out') and not os.path.exists(self.cmap_out)):
-            self.create_crystal_map()
+        self.create_crystal_map()
 
         # Simulation
         self.simulate(img_path, img_att_path)
