@@ -86,7 +86,7 @@ class Phantom2DPetGenerator:
             attempt += 1
             return self.create_organ(body, axes=(body_a, body_b), position=position, attempt=attempt)
         elif attempt == max_attempts:
-            return np.zeros_like(body), (0, 0), out_position
+            raise Exception('Max attempts reached in organ creation')
         else:
             return out, (a, b), out_position
 
@@ -202,7 +202,10 @@ quantification units := 1
         organ_activity_min, organ_activity_max = 1, 30
         num_organs = np.random.randint(min_num_organs, max_num_organs)
         for _ in range(num_organs):
-            organ, axes, position = self.create_organ(np.logical_and(body, np.logical_not(organs_mask)), axes=(self.body_a, self.body_b))
+            try:
+                organ, axes, position = self.create_organ(np.logical_and(body, np.logical_not(organs_mask)), axes=(self.body_a, self.body_b))
+            except:
+                continue
             organs_axes.append(axes)
             organs_position.append(position)
             organs_mask = np.where(organ, 1., organs_mask)
@@ -227,7 +230,10 @@ quantification units := 1
         organs_with_tumour_idx = np.random.choice(len(organs), replace=True, size=num_tumours)
         for organ_with_tumour_idx_ in organs_with_tumour_idx:
             organ_a, organ_b = organs_axes[organ_with_tumour_idx_]
-            tumour, _, _ = self.create_tumour(organs[organ_with_tumour_idx_], axes=(organ_a, organ_b), position=organs_position[organ_with_tumour_idx_])
+            try:
+                tumour, _, _ = self.create_tumour(organs[organ_with_tumour_idx_], axes=(organ_a, organ_b), position=organs_position[organ_with_tumour_idx_])
+            except:
+                continue
             out = np.where(tumour, self.get_activity_value(tumour_activity_min, tumour_activity_max), out)
         
         out, seed = self.postprocess(out, seed=None)
