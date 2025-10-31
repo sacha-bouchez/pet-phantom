@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 class SinogramSimulator:
 
@@ -20,11 +21,24 @@ class SinogramSimulator:
     def set_seed(self, seed=None):
         self.seed = seed
 
+    def run_cmd(self, cmd):
+        if self.verbose > 0:
+            result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        else:
+            result = subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        #
+        if result.returncode != 0:
+            print(f"Error running command: {cmd}")
+            print(f"Error message: {result.stderr}")
+            raise RuntimeError("Command failed")
+        return result
+
     def create_crystal_map(self):
 
         self.cmap_out = os.path.join(self.dout, 'cmap')
         cmd = f"cd {self.dout} && {self.binsimu}/create_crystal_map.exe -m {self.scanner_name} -r {self.random_deficiencies} -o cmap -w -v {self.verbose}"
-        os.system(cmd)
+        result = self.run_cmd(cmd)
+
 
     def simulate(self, img_path, img_att_path,
                 scatter_component=0.35,
@@ -49,7 +63,7 @@ class SinogramSimulator:
             f"cd {self.dout} && {self.binsimu}/simulator.exe -m {self.scanner_name} -c 'cmap/cmap.ecm'" \
             f" -i {img_path} -a {img_att_path} -s {scatter_component} -r {random_component} -p {gaussian_PSF}" \
             f" -v {self.verbose} -P {nb_count} -o simu -z {self.seed}"
-        os.system(cmd)
+        result = self.run_cmd(cmd)
 
     def create_castor_data(self):
 
@@ -62,7 +76,7 @@ class SinogramSimulator:
             f" -n simu/simu_nm.s.hdr" \
             f" -A simu/simu_at.s" \
             f" -c cmap/cmap.ecm -castor -v {self.verbose}"
-        os.system(cmd)
+        result = self.run_cmd(cmd)
 
     def run(self, img_path, img_att_path, dest_path):
 
