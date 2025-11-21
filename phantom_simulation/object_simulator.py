@@ -227,14 +227,15 @@ quantification units := 1
             if organ_value < body_value:
                 organ_values.pop(i)
                 organs.pop(i)
-        organs_with_tumour_idx = np.random.choice(len(organs), replace=True, size=num_tumours)
-        for organ_with_tumour_idx_ in organs_with_tumour_idx:
-            organ_a, organ_b = organs_axes[organ_with_tumour_idx_]
-            try:
-                tumour, _, _ = self.create_tumour(organs[organ_with_tumour_idx_], axes=(organ_a, organ_b), position=organs_position[organ_with_tumour_idx_])
-            except:
-                continue
-            out = np.where(tumour, self.get_activity_value(tumour_activity_min, tumour_activity_max), out)
+        if len(organs) > 0:
+            organs_with_tumour_idx = np.random.choice(len(organs), replace=True, size=num_tumours)
+            for organ_with_tumour_idx_ in organs_with_tumour_idx:
+                organ_a, organ_b = organs_axes[organ_with_tumour_idx_]
+                try:
+                    tumour, _, _ = self.create_tumour(organs[organ_with_tumour_idx_], axes=(organ_a, organ_b), position=organs_position[organ_with_tumour_idx_])
+                except:
+                    continue
+                out = np.where(tumour, self.get_activity_value(tumour_activity_min, tumour_activity_max), out)
         
         out, seed = self.postprocess(out, seed=None)
         attenuation_map, _ = self.postprocess(attenuation_map, seed=seed)
