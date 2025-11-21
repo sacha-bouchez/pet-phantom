@@ -7,6 +7,8 @@ and simulate sinograms from a given activity distribution.
 
 import numpy as np
 import tqdm
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 # ---------- Helper: define image grid ----------
 # image_origin: (x0, y0, z0) of voxel (0,0,0) center
@@ -109,73 +111,6 @@ class SinogramSimulatorHomemade:
                 lors.append((start_point, end_point))
 
         return np.array(lors)
-
-    # def siddon_ray_intersections(self, p0, p1, grid: ImageGrid):
-    #     """
-    #     Compute the intersection lengths of a ray with the voxels in the image grid using Siddon's algorithm.
-    #     Args:
-    #         p0 (np.ndarray): 3D coordinates of the ray start point.
-    #         p1 (np.ndarray): 3D coordinates of the ray end point.
-    #         grid (ImageGrid): ImageGrid object defining the voxel grid.
-    #     Returns:
-    #         intersections (list of tuples): Each tuple contains (voxel_index, length).
-    #     """
-    #     # p0, p1: endpoints (3,)
-    #     # Implementation adapted for clarity; it's not the fastest.
-    #     x_min,x_max,y_min,y_max,z_min,z_max = grid.bounds()
-    #     # Parametric line p(t) = p0 + t*(p1-p0), t in [0,1]
-    #     d = p1 - p0
-    #     # quickly check if line intersects bounding box
-    #     # compute entry/exit t for box
-    #     tmin = 0.0; tmax = 1.0
-    #     for dim in range(3):
-    #         if abs(d[dim]) < 1e-12:
-    #             # parallel to planes normal to this axis
-    #             coord = p0[dim]
-    #             if coord < [x_min,y_min,z_min][dim] or coord > [x_max,y_max,z_max][dim]:
-    #                 return [], []
-    #         else:
-    #             t1 = ([x_min,y_min,z_min][dim] - p0[dim]) / d[dim]
-    #             t2 = ([x_max,y_max,z_max][dim] - p0[dim]) / d[dim]
-    #             ta = min(t1,t2); tb = max(t1,t2)
-    #             if tb < tmin or ta > tmax:
-    #                 return [], []
-    #             tmin = max(tmin, ta); tmax = min(tmax, tb)
-    #     # restrict to [tmin,tmax]
-    #     if tmax <= tmin:
-    #         return [], []
-    #     # sample a bunch of parametric points at voxel boundaries using Siddon logic
-    #     # compute intersections with each set of planes and sort them
-    #     planes_t = [tmin, tmax]
-    #     # For each axis, add plane intersections
-    #     # build list of voxel indices by stepping through t intervals
-    #     # For simplicity (but slower), sample a fine subdivision within [tmin,tmax] and test which voxel center lies there.
-    #     # Choose Nsteps proportional to max number of voxels along path:
-    #     path_len = np.linalg.norm((p1 - p0) * (tmax - tmin))
-    #     max_voxel_dim = min(grid.vx, grid.vy, grid.vz)
-    #     Nsteps = max( int(np.ceil(path_len / (max_voxel_dim*0.25))) , 5)
-    #     ts = np.linspace(tmin, tmax, Nsteps)
-    #     vox_dict = {}
-    #     for i in range(len(ts)-1):
-    #         tm = 0.5*(ts[i]+ts[i+1])
-    #         p = p0 + tm*d
-    #         # compute voxel indices
-    #         ix = int((p[0] - grid.x0) / grid.vx)
-    #         iy = int((p[1] - grid.y0) / grid.vy)
-    #         iz = int((p[2] - grid.z0) / grid.vz)
-    #         if ix < 0 or ix >= grid.nx or iy < 0 or iy >= grid.ny or iz < 0 or iz >= grid.nz:
-    #             continue
-    #         key = (ix,iy,iz)
-    #         vox_dict[key] = vox_dict.get(key, 0.0) + (ts[i+1]-ts[i])*np.linalg.norm(d)
-    #     # convert to lists
-    #     voxels = []
-    #     lengths = []
-    #     for (ix,iy,iz), plen in vox_dict.items():
-    #         flat = (iz*grid.ny + iy)*grid.nx + ix
-    #         voxels.append(flat)
-    #         lengths.append(plen)
-    #     return voxels, lengths
-
 
     def siddon_ray_trace(self, p0, p1, vol_shape, voxel_size, origin):
         """
@@ -318,17 +253,115 @@ class SinogramSimulatorHomemade:
         """
         # TODO
 
-    def forward_project(self, activity_distribution, attenuation_map=None):
+    def _process_lor_batch(self, lor_indices, activity_distribution, attenuation_map, 
+                           vol_shape, voxel_size, origin, scatter_fraction, random_fraction, seed,
+                           attenuation_scale):
+        """
+        Process a batch of LORs and return their sinogram values.
+        This method is designed to be called in parallel processes.
+        
+        Args:
+            lor_indices (list): List of LOR indices to process.
+            activity_distribution (np.ndarray): 3D activity distribution.
+            attenuation_map (np.ndarray or None): 3D attenuation map.
+            vol_shape (tuple): Volume shape (nx, ny, nz).
+            voxel_size (tuple): Voxel size (vx, vy, vz).
+            origin (tuple): Origin coordinates.
+            scatter_fraction (float): Fraction of scatter events (0 to 1).
+            random_fraction (float): Fraction of random events relative to prompt events (0 to 1).
+            seed (int or None): Random seed for reproducibility.
+            attenuation_scale (float): Scaling factor for attenuation map values.
+        
+        Returns:
+            np.ndarray: Sinogram values for this batch.
+        """
+        batch_size = len(lor_indices)
+        batch_result = np.zeros(batch_size)
+        
+        # Set random seed for this batch if provided
+        if seed is not None:
+            # Use a unique seed for each batch based on first LOR index
+            np.random.seed(seed + lor_indices[0])
+        
+        for batch_idx, lor_idx in enumerate(lor_indices):
+            p0, p1 = self.lors[lor_idx]
+            voxels = self.siddon_ray_trace(
+                p0, p1,
+                vol_shape=vol_shape,
+                voxel_size=voxel_size,
+                origin=origin
+            )
+            
+            # if len(voxels) == 0:
+            #     continue
+            
+            # Compute true coincidence contribution
+            true_counts = 0.0
+            for (ix, iy, iz, l) in voxels:
+                true_counts += activity_distribution[ix, iy, iz] * l
+
+            # Convert from kBq/Ml to counts
+            true_counts *= self.vx * self.vy * self.vz / 1e3  # Convert voxel volume from mm^3 to mL
+            
+            # Apply attenuation if provided
+            if attenuation_map is not None:
+                mu_sum = 0.0
+                for (ix, iy, iz, l) in voxels:
+                    # l is in mm, attenuation should be in mm^-1
+                    # Apply scaling factor to convert attenuation map to correct units
+                    # Typical value: 0.096 cm^-1 = 0.0096 mm^-1 for water at 511 keV
+                    mu_sum += attenuation_map[ix, iy, iz] * attenuation_scale * l
+                # Attenuation factor: exp(-mu*l) where mu is in mm^-1 and l is in mm
+                attenuation_factor = np.exp(-mu_sum)
+                true_counts *= attenuation_factor
+            
+            # Add scatter component (modeled as fraction of true counts)
+            if scatter_fraction > 0:
+                scatter_counts = true_counts * scatter_fraction / (1 - scatter_fraction)
+            else:
+                scatter_counts = 0.0
+            
+            # Compute prompt counts (true + scatter)
+            prompt_counts = true_counts + scatter_counts
+            
+            # Add random coincidences (as fraction of prompt events)
+            if random_fraction > 0:
+                random_counts = prompt_counts * random_fraction / (1 - random_fraction)
+            else:
+                random_counts = 0.0
+            
+            # Total expected counts
+            batch_result[batch_idx] = prompt_counts + random_counts
+        
+        return batch_result
+
+    def forward_project(self, activity_distribution, attenuation_map=None, 
+                       batch_size=1000, n_processes=None, use_multiprocessing=True,
+                       add_noise=False, scatter_fraction=0.0, random_fraction=0.0, seed=None,
+                       attenuation_scale=0.01):
         """
         Simulate a sinogram from the given activity distribution and optional attenuation map.
-        The forward projection is done using Siddon's algorithm.
+        The forward projection is done using Siddon's algorithm with batch processing and multiprocessing.
+        
         Args:
             activity_distribution (np.ndarray): 3D array representing the activity distribution.
             attenuation_map (np.ndarray, optional): 3D array representing the attenuation map.
+            batch_size (int): Number of LORs to process in each batch. Default: 1000.
+            n_processes (int, optional): Number of parallel processes. If None, uses all available CPUs.
+            use_multiprocessing (bool): Whether to use multiprocessing. Default: True.
+            add_noise (bool): Whether to add Poisson noise to the sinogram. Default: False.
+            scatter_fraction (float): Fraction of scatter events relative to total events (0 to 1). 
+                                     For example, 0.3 means 30% scatter (scatter/total). Default: 0.0.
+            random_fraction (float): Fraction of random events relative to prompt events (0 to 1).
+                                    For example, 0.2 means 20% randoms (randoms/prompt). Default: 0.0.
+            seed (int, optional): Random seed for reproducibility. Default: None.
+            attenuation_scale (float): Scaling factor for attenuation map values to convert to mm^-1.
+                                      Default: 0.01 (assumes attenuation map is in relative units).
+                                      For water at 511 keV: 0.096 cm^-1 = 0.0096 mm^-1.
+        
         Returns:
             sinogram (np.ndarray): Simulated sinogram data.
         """
-
         self.nx, self.ny, self.nz = activity_distribution.shape
 
         # Get grid
@@ -337,118 +370,277 @@ class SinogramSimulatorHomemade:
         self.lors = self.get_list_LORs()
         n_lors = self.lors.shape[0]
 
+        # Prepare parameters
+        vol_shape = (self.nx, self.ny, self.nz)
+        voxel_size = (self.vx, self.vy, self.vz)
+        origin = (
+            - (self.nx * self.vx) / 2,
+            - (self.ny * self.vy) / 2,
+            - (self.nz * self.vz) / 2
+        )
+
         # Initialize sinogram
         sinogram = np.zeros(n_lors)
-        for i, lor in enumerate(tqdm.tqdm(self.lors)):
-            p0, p1 = lor
-            voxels = self.siddon_ray_trace(
-                p0, p1,
-                vol_shape=(self.nx, self.ny, self.nz),
-                voxel_size=(self.vx, self.vy, self.vz),
-                origin=(
-                    - (self.nx * self.vx) / 2,
-                    - (self.ny * self.vy) / 2,
-                    - (self.nz * self.vz) / 2
-                )
-            )
-            if len(voxels) == 0:
-                continue
-
-
-            for (ix, iy, iz, l) in voxels:
-                voxel_index = (iz * self.ny + iy) * self.nx + ix
-                sinogram[i] += activity_distribution[ix, iy, iz] * l
+        
+        # Create batches of LOR indices
+        lor_indices = list(range(n_lors))
+        batches = [lor_indices[i:i + batch_size] for i in range(0, n_lors, batch_size)]
+        
+        if use_multiprocessing and n_lors > batch_size:
+            # Use multiprocessing
+            if n_processes is None:
+                n_processes = cpu_count()
+            
+            print(f"Processing {n_lors} LORs in {len(batches)} batches using {n_processes} processes...")
+            if scatter_fraction > 0 or random_fraction > 0:
+                print(f"  Scatter fraction: {scatter_fraction:.2%}, Random fraction: {random_fraction:.2%}")
             if attenuation_map is not None:
-                mu_sum = 0.0
-                for (ix, iy, iz, l) in voxels:
-                    mu_sum += attenuation_map[ix, iy, iz] * l
-                sinogram[i] *= np.exp(-mu_sum)
-
+                print(f"  Attenuation scaling: {attenuation_scale} (effective mu range: [{attenuation_map.min()*attenuation_scale:.6f}, {attenuation_map.max()*attenuation_scale:.6f}] mm^-1)")
             
+            # Create a partial function with fixed parameters
+            process_func = partial(
+                self._process_lor_batch,
+                activity_distribution=activity_distribution,
+                attenuation_map=attenuation_map,
+                vol_shape=vol_shape,
+                voxel_size=voxel_size,
+                origin=origin,
+                scatter_fraction=scatter_fraction,
+                random_fraction=random_fraction,
+                seed=seed,
+                attenuation_scale=attenuation_scale
+            )
             
-            # sinogram[i] = sum(activity_distribution.flatten()[v] * l for v, l in zip(voxel_indices, lengths))
-            # if attenuation_map is not None:
-            #     mu_sum = sum(attenuation_map.flatten()[v] * l for v, l in zip(voxel_indices, lengths))
-            #     sinogram[i] *= np.exp(-mu_sum)
+            # Process batches in parallel
+            with Pool(processes=n_processes) as pool:
+                batch_results = list(tqdm.tqdm(
+                    pool.imap(process_func, batches),
+                    total=len(batches),
+                    desc="Forward projection"
+                ))
+            
+            # Combine results
+            idx = 0
+            for batch_result in batch_results:
+                batch_len = len(batch_result)
+                sinogram[idx:idx + batch_len] = batch_result
+                idx += batch_len
+        else:
+            # Sequential processing with batches (useful for small problems or debugging)
+            print(f"Processing {n_lors} LORs in {len(batches)} batches sequentially...")
+            if scatter_fraction > 0 or random_fraction > 0:
+                print(f"  Scatter fraction: {scatter_fraction:.2%}, Random fraction: {random_fraction:.2%}")
+            if attenuation_map is not None:
+                print(f"  Attenuation scaling: {attenuation_scale} (effective mu range: [{attenuation_map.min()*attenuation_scale:.6f}, {attenuation_map.max()*attenuation_scale:.6f}] mm^-1)")
+            for batch in tqdm.tqdm(batches, desc="Forward projection"):
+                batch_result = self._process_lor_batch(
+                    batch, activity_distribution, attenuation_map,
+                    vol_shape, voxel_size, origin,
+                    scatter_fraction, random_fraction, seed,
+                    attenuation_scale
+                )
+                for local_idx, lor_idx in enumerate(batch):
+                    sinogram[lor_idx] = batch_result[local_idx]
+        
+        # Add Poisson noise if requested
+        if add_noise:
+            if seed is not None:
+                np.random.seed(seed)
+            # Only add noise to non-zero values to avoid issues
+            mask = sinogram > 0
+            sinogram[mask] = np.random.poisson(sinogram[mask])
+            print(f"Applied Poisson noise to sinogram")
 
         return sinogram
 
-    def build_sinogram(self, activity_distribution, attenuation_map=None, n_angles=180, n_radial_bins=128, max_radius=100):
+    def build_sinogram(self, activity_distribution, attenuation_map=None,
+                    n_angles=180, n_radial_bins=128, max_radius=200,
+                    batch_size=1000, n_processes=None, use_multiprocessing=True,
+                    add_noise=False, scatter_fraction=0.0, random_fraction=0.0, seed=None,
+                    attenuation_scale=0.01, max_ring_diff=0):
         """
-        Wrapper function to build the sinogram from activity distribution and optional attenuation map.
-        Args:
-            activity_distribution (np.ndarray): 3D array representing the activity distribution.
-            attenuation_map (np.ndarray, optional): 3D array representing the attenuation map.
-        Returns:
-            sinogram (np.ndarray): Simulated sinogram data.
-        """
-        flattened_sinogram = self.forward_project(activity_distribution, attenuation_map)
-        sino = np.zeros((n_angles, n_radial_bins), dtype=np.float32)
-
-        for lor, c in zip(self.lors, flattened_sinogram):
-            p0, p1 = lor
-            v = p1 - p0
-            theta = np.arctan2(v[1], v[0])
-            theta = (theta + np.pi) % np.pi
-
-            angle_id = int(np.floor(theta / np.pi * n_angles))
-
-            m = 0.5*(p0 + p1)
-            s = m[0]*np.cos(theta) + m[1]*np.sin(theta)
-
-            s_norm = (s + max_radius) / (2*max_radius)
-            radial_id = int(np.floor(s_norm * n_radial_bins))
-
-            if 0 <= radial_id < n_radial_bins:
-                sino[angle_id, radial_id] += c
-
-        return sino
-
+        Build a 2D sinogram from the forward projection data.
         
+        Args:
+            activity_distribution (np.ndarray): 3D activity distribution.
+            attenuation_map (np.ndarray, optional): 3D attenuation map.
+            n_angles (int): Number of angular bins (0 to π). Default: 180.
+            n_radial_bins (int): Number of radial bins. Default: 128.
+            max_radius (float): Maximum radial distance in mm. Default: 200.
+            batch_size (int): Batch size for processing. Default: 1000.
+            n_processes (int, optional): Number of processes for multiprocessing.
+            use_multiprocessing (bool): Enable multiprocessing. Default: True.
+            add_noise (bool): Add Poisson noise. Default: False.
+            scatter_fraction (float): Scatter fraction. Default: 0.0.
+            random_fraction (float): Random fraction. Default: 0.0.
+            seed (int, optional): Random seed.
+            attenuation_scale (float): Attenuation scaling factor. Default: 0.01.
+            max_ring_diff (int): Maximum ring difference to include (0 for central plane only). Default: 0.
+        
+        Returns:
+            np.ndarray: 2D sinogram of shape (n_angles, n_radial_bins).
+        """
+
+        flattened = self.forward_project(
+            activity_distribution, attenuation_map=attenuation_map, 
+            batch_size=batch_size, n_processes=n_processes, use_multiprocessing=use_multiprocessing,
+            add_noise=add_noise, scatter_fraction=scatter_fraction, random_fraction=random_fraction, seed=seed,
+            attenuation_scale=attenuation_scale
+        )
+
+        sinogram = np.zeros((n_angles, n_radial_bins), dtype=np.float32)
+        
+        # Crystal to ring mapping
+        n_crystals = self.n_rings * self.n_detectors_per_ring
+        ring_of = np.repeat(np.arange(self.n_rings), self.n_detectors_per_ring)
+
+        # Loop over all LORs
+        idx = 0
+        n_included = 0
+        n_excluded = 0
+        
+        for i in range(n_crystals):
+            for j in range(i + 1, n_crystals):
+                # Get ring indices
+                ring_i = ring_of[i]
+                ring_j = ring_of[j]
+                ring_diff = abs(ring_j - ring_i)
+                
+                # Filter by ring difference
+                if ring_diff > max_ring_diff:
+                    idx += 1
+                    n_excluded += 1
+                    continue
+                
+                count = flattened[idx]
+                
+                # Skip if no counts
+                if count == 0:
+                    idx += 1
+                    continue
+                
+                # Get LOR endpoints
+                p0, p1 = self.lors[idx]
+                
+                # Extract 2D coordinates (x,y plane only)
+                p0_xy = np.array([p0[0], p0[1]], dtype=np.float64)
+                p1_xy = np.array([p1[0], p1[1]], dtype=np.float64)
+                
+                # Line direction vector
+                d = p1_xy - p0_xy
+                d_norm = np.linalg.norm(d)
+                
+                if d_norm < 1e-10:
+                    idx += 1
+                    continue
+                
+                d = d / d_norm  # normalize
+                
+                # Normal vector (perpendicular to line, rotated 90° CCW)
+                n = np.array([-d[1], d[0]], dtype=np.float64)
+                
+                # Perpendicular distance from origin to line: s = p0 · n
+                s = np.dot(p0_xy, n)
+                
+                # Angle of normal vector
+                theta = np.arctan2(n[1], n[0])
+                
+                # Fold to [0, π) and adjust sign of s accordingly
+                if theta < 0:
+                    theta += np.pi
+                    s = -s
+                if theta >= np.pi:
+                    theta -= np.pi
+                    s = -s
+                
+                # Convert to bin indices
+                angle_id = int((theta / np.pi) * n_angles)
+                angle_id = np.clip(angle_id, 0, n_angles - 1)
+                
+                # Map s to radial bins: s ranges from -max_radius to +max_radius
+                radial_id = int(((s + max_radius) / (2.0 * max_radius)) * n_radial_bins)
+                
+                # Accumulate counts in sinogram
+                if 0 <= radial_id < n_radial_bins:
+                    sinogram[angle_id, radial_id] += count
+                    n_included += 1
+                
+                idx += 1
+        
+        print(f"Sinogram built: {n_included} LORs included, {n_excluded} LORs excluded (ring diff > {max_ring_diff})")
+        print(f"Sinogram shape: {sinogram.shape}, non-zero bins: {np.count_nonzero(sinogram)}")
+        print(f"Sinogram range: [{sinogram.min():.2f}, {sinogram.max():.2f}], mean: {sinogram.mean():.2f}")
+        
+        return sinogram
+
+
 
 if __name__ == "__main__":
 
     simulator = SinogramSimulatorHomemade(
         voxel_size=(2.0, 2.0, 2.0),
         n_rings=1,
-        n_detectors_per_ring=32,
+        n_detectors_per_ring=512,
         ring_spacing=4,
-        scanner_radius=200.0
+        scanner_radius=300.0
     )
+    
+    crystal_map = simulator.get_crystal_map()
 
-    # crystal_map = simulator.get_crystal_map()
-    # print("Crystal Map:\n", crystal_map)
+    with open('/workspace/brain_web_phantom/gt_web_after_scaling.img', 'rb') as f:
+        image = np.frombuffer(f.read(), dtype=np.float32).reshape((160, 160, 1))
 
-    # # give visualization of the crystal map
-    # try:
-    #     import matplotlib.pyplot as plt
-    #     from mpl_toolkits.mplot3d import Axes3D
 
-    #     fig = plt.figure()
-    #     ax = fig.add_subplot(111, projection='3d')
-    #     ax.scatter(crystal_map[:, 0], crystal_map[:, 1], crystal_map[:, 2])
-    #     ax.set_xlabel('X (mm)')
-    #     ax.set_ylabel('Y (mm)')
-    #     ax.set_zlabel('Z (mm)')
-    #     ax.set_title('Crystal Map Visualization')
-    #     plt.show()
-    # except ImportError:
-    #     print("matplotlib not installed, skipping visualization.")
+    with open('/workspace/brain_web_phantom/attenuat_brain_phantom.img', 'rb') as f:
+        attenuation_map = np.frombuffer(f.read(), dtype=np.float32).reshape((160, 160, 1))
+    
+    
+    # Estimate appropriate attenuation scale
+    # Water at 511 keV: 0.096 cm^-1 = 0.0096 mm^-1
+    # If attenuation map is normalized (0-1 range), scale should be around 0.0096
+    # If it's in HU or other units, adjust accordingly
 
-    # simulate a circle
-    activity_distribution = np.where(
-        ( (np.linspace(-100,100,100).reshape(-1,1) **2 + np.linspace(-100,100,100).reshape(1,-1) **2)
-          < (32**2) ),1.0, 0.0
-    ).reshape(100,100,1)
+
+    # Test with standard geometric sinogram - central plane only
+    print("\n=== Building 2D sinogram for central plane (ring diff = 0) ===")
     sinogram = simulator.build_sinogram(
-        activity_distribution=activity_distribution,
-        attenuation_map=None
+        activity_distribution=image,
+        attenuation_map=attenuation_map,
+        n_angles=256,
+        n_radial_bins=256,
+        max_radius=image.shape[0] // 2,
+        batch_size=256,
+        n_processes=None,
+        use_multiprocessing=True,
+        add_noise=False,
+        scatter_fraction=0.30,
+        random_fraction=0.20,
+        seed=42,
+        attenuation_scale=0.1,  # it is given in cm^-1 instead of mm^-1
+        max_ring_diff=0  # Only include central plane (ring difference = 0)
     )
+
     try:
         import matplotlib.pyplot as plt
 
-        plt.figure()
-        plt.imshow(sinogram, aspect='auto', cmap='gray')
+        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Sinogram
+        im0 = axes[0].imshow(sinogram, aspect='auto', cmap='gray', 
+                            interpolation='nearest')
+        axes[0].set_title('2D Sinogram (Central Plane)')
+        axes[0].set_xlabel('Radial bin')
+        axes[0].set_ylabel('Angle bin')
+        plt.colorbar(im0, ax=axes[0])
+        
+        # Original image for comparison
+        im1 = axes[1].imshow(image[:, :, 0], cmap='gray')
+        axes[1].set_title('Original Activity Image')
+        axes[1].set_xlabel('X')
+        axes[1].set_ylabel('Y')
+        plt.colorbar(im1, ax=axes[1])
+
+        plt.tight_layout()
         plt.show()
     except ImportError:
         print("matplotlib not installed, skipping sinogram plot.")
