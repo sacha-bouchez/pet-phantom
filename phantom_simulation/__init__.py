@@ -1,0 +1,1 @@
+from phantom_simulation.object_simulator import Phantom2DPetGenerator
