@@ -38,6 +38,15 @@ class Phantom2DPetGenerator:
         self.body_b = b
         return self.create_ellipse(center=(0, 0), axes=(a, b))
 
+    def calibrate(self, n_samples=100):
+        """Generate n_samples bodies to compute the average object size."""
+        sizes = []
+        for _ in range(n_samples):
+            body = self.create_body()
+            sizes.append(np.sum(body) / (self.shape[0] * self.shape[1]))
+        self.avg_obj_size = np.mean(sizes)
+        return self.avg_obj_size
+
     def create_organ(self, body, axes, position=(0,0), size_ratio=0.8, attempt=1):
         """
         Create organ mask.
